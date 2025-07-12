@@ -1,1 +1,178 @@
+<!doctype html>
+<html lang="el">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chess FEN Builder + Stockfish Eval</title>
+
+    <link rel="stylesheet" href="chessboardjs-1.0.0/css/chessboard-1.0.0.min.css" />
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="chessboardjs-1.0.0/js/chessboard-1.0.0.min.js"></script>
+    <style>
+      body { font-family: system-ui, Arial; background: #fff; margin: 0; padding: 0; }
+      .minimal-btn { background:#f8f8f8; border:1px solid #ccc; color:#222; font-size:14px; padding:6px 14px; border-radius:7px; cursor:pointer; margin:2px; }
+      .minimal-btn:hover { background:#ececec; border-color:#999; }
+      .side-btn { background:#f6f8fa; border:1px solid #bcd3ea; color:#222; font-size:15px; padding:6px 26px; border-radius:6px; cursor:pointer; }
+      .side-btn.selected, .side-btn:hover { background:#3697ef; color:#fff; border-color:#3697ef; }
+      .switch { position:relative; display:inline-block; width:34px; height:20px; margin-left:8px; }
+      .switch input { opacity:0; width:0; height:0; }
+      .slider { position:absolute; inset:0; background:#e2e5eb; border-radius:20px; transition:0.3s; cursor:pointer; }
+      .slider:before { content:""; position:absolute; height:15px; width:15px; left:3px; bottom:2.3px; background:#fff; border-radius:50%; transition:0.3s; }
+      input:checked + .slider { background:#3697ef; }
+      input:checked + .slider:before { transform:translateX(14px); }
+      .castle-label { display:flex; justify-content:space-between; font-size:14px; margin-bottom:7px; }
+      #evalOutput { font-size:15px; font-weight:600; margin-left:6px; }
+    </style>
+  </head>
+  <body>
+    <div style="width: 370px; margin: 50px auto 40px auto">
+      <div style="background:#fafbfc; border-radius:10px; border:1px solid #e2e5eb; padding:18px 20px 13px 20px; box-shadow:0 2px 9px 0 #f6f8fa;">
+        <div style="font-size:15px; font-weight:600; margin-bottom:14px">Σειρά για κίνηση</div>
+        <div style="display:flex; gap:14px; margin-bottom:18px">
+          <button id="toMoveW" class="side-btn selected">Λευκά</button>
+          <button id="toMoveB" class="side-btn">Μαύρα</button>
+        </div>
+        <div style="font-size:15px; font-weight:600; margin-bottom:10px">Δυνατότητα Ροκέ</div>
+        <div class="castle-options">
+          <div class="castle-label"><span>Λευκό Ροκέ Βασιλιά<label class="switch"><input type="checkbox" id="wK" checked /><span class="slider"></span></label></span></div>
+          <div class="castle-label"><span>Λευκό Ροκέ Βασίλισσας<label class="switch"><input type="checkbox" id="wQ" checked /><span class="slider"></span></label></span></div>
+          <div class="castle-label"><span>Μαύρο Ροκέ Βασιλιά<label class="switch"><input type="checkbox" id="bK" checked /><span class="slider"></span></label></span></div>
+          <div class="castle-label"><span>Μαύρο Ροκέ Βασίλισσας<label class="switch"><input type="checkbox" id="bQ" checked /><span class="slider"></span></label></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="text-align:center; margin-top:20px">
+      <input id="fenImportInput" type="text" placeholder="Εισαγωγή FEN εδώ" style="width:97%; max-width:350px; font-size:15px; height:38px; padding:4px 12px; border-radius:8px; border:1px solid #ccc; margin-bottom:13px; background:#fafafa;" />
+      <button id="importFenBtn" class="minimal-btn">Εμφάνισε Θέση</button>
+    </div>
+
+    <div id="builderBoard" style="width:350px; margin:auto; margin-bottom:25px"></div>
+
+    <div style="text-align:center; margin:30px 0">
+      <button id="clearBuilderBtn" class="minimal-btn">Άδειασε σκακιέρα</button>
+      <button id="startBuilderBtn" class="minimal-btn">Αρχική θέση</button>
+      <button id="flipBoardBtn" class="minimal-btn">Αναστροφή σκακιέρας</button>
+    </div>
+
+    <div style="text-align:center">
+      <span style="font-size:14px; font-weight:500">Τρέχον FEN:</span>
+      <input id="fenOutput" type="text" readonly style="width:92%; max-width:340px; font-size:15px; height:38px; padding:4px 12px; border-radius:8px; border:1px solid #ccc; background:#fafafa;" />
+      <button id="copyFenBtn" class="minimal-btn" title="Αντιγραφή FEN" style="font-size:19px; padding:0 7px">📋</button>
+    </div>
+
+    <div style="text-align:center; margin-top:25px">
+      <button id="evalBtn" class="minimal-btn">Αξιολόγηση</button>
+      <span id="evalOutput"></span>
+    </div>
+
+    <script>
+      $(function () {
+        const board = Chessboard('builderBoard', {
+          draggable: true,
+          dropOffBoard: 'trash',
+          sparePieces: true,
+          pieceTheme: 'chessboardjs-1.0.0/img/chesspieces/wikipedia/{piece}.png',
+          position: 'start',
+          onDrop: () => setTimeout(updateFEN, 10),
+          onSnapEnd: () => setTimeout(updateFEN, 10),
+        });
+
+        let sideToMove = 'w';
+        let engine = null;
+        let engineReady = false;
+
+        $('#toMoveW').click(() => { sideToMove = 'w'; $('#toMoveW').addClass('selected'); $('#toMoveB').removeClass('selected'); updateFEN(); });
+        $('#toMoveB').click(() => { sideToMove = 'b'; $('#toMoveB').addClass('selected'); $('#toMoveW').removeClass('selected'); updateFEN(); });
+        $('.switch input').change(updateFEN);
+        $('#clearBuilderBtn').click(() => { board.clear(); $('.switch input').prop('checked', false); $('#toMoveW').click(); });
+        $('#startBuilderBtn').click(() => { board.start(); $('.switch input').prop('checked', true); $('#toMoveW').click(); });
+        $('#flipBoardBtn').click(() => board.flip());
+        $('#copyFenBtn').click(() => { $('#fenOutput').select(); document.execCommand('copy'); });
+
+        $('#importFenBtn').click(() => {
+          const fen = $('#fenImportInput').val().trim();
+          if (!fen) return;
+          const parts = fen.split(' ');
+          if (parts.length < 4) return;
+          board.position(parts[0]);
+          (parts[1] === 'w' ? $('#toMoveW') : $('#toMoveB')).click();
+          $('#wK').prop('checked', parts[2].includes('K'));
+          $('#wQ').prop('checked', parts[2].includes('Q'));
+          $('#bK').prop('checked', parts[2].includes('k'));
+          $('#bQ').prop('checked', parts[2].includes('q'));
+          updateFEN();
+        });
+
+        $('#evalBtn').click(() => {
+          const fen = $('#fenOutput').val().trim();
+          if (!fen) return;
+          ensureEngine(() => runEvaluation(fen));
+        });
+
+        function getCastlingString() {
+          let s = '';
+          if ($('#wK').prop('checked')) s += 'K';
+          if ($('#wQ').prop('checked')) s += 'Q';
+          if ($('#bK').prop('checked')) s += 'k';
+          if ($('#bQ').prop('checked')) s += 'q';
+          return s || '-';
+        }
+
+        function updateFEN() {
+          const fenPos = board.fen();
+          const cast = getCastlingString();
+          $('#fenOutput').val(`${fenPos} ${sideToMove} ${cast} - 0 1`);
+        }
+
+        function ensureEngine(cb) {
+          if (engine && engineReady) return cb();
+          if (engine && !engineReady) {
+            $('#evalOutput').text('Ο κινητήρας αρχικοποιείται…');
+            return;
+          }
+          $('#evalOutput').text('Φόρτωση Stockfish…');
+          const script = document.createElement('script');
+          script.src = 'stockfish/stockfish.js';
+          script.onload = () => {
+            try {
+              engine = STOCKFISH();
+              engine.onmessage = onEngineMessage;
+              engine.postMessage('uci');
+              const int = setInterval(() => {
+                if (engineReady) { clearInterval(int); cb(); }
+              }, 100);
+            } catch (e) {
+              console.error(e);
+              $('#evalOutput').text('⚠️ Σφάλμα εκκίνησης Stockfish');
+            }
+          };
+          script.onerror = () => $('#evalOutput').text('⚠️ Αποτυχία φόρτωσης stockfish.js');
+          document.body.appendChild(script);
+        }
+
+        function onEngineMessage(e) {
+          const line = e.data || e;
+          if (typeof line !== 'string') return;
+          if (line === 'uciok') engineReady = true;
+          else if (line.startsWith('info depth')) {
+            const m = line.match(/score (cp|mate) (-?\d+)/);
+            if (!m) return;
+            const text = m[1] === 'cp' ? (parseInt(m[2], 10) / 100).toFixed(2) : '#' + m[2];
+            $('#evalOutput').text('Αξιολόγηση: ' + text);
+          }
+        }
+
+        function runEvaluation(fen) {
+          $('#evalOutput').text('Υπολογισμός…');
+          engine.postMessage('ucinewgame');
+          engine.postMessage('position fen ' + fen);
+          engine.postMessage('go depth 14');
+        }
+
+        updateFEN();
+      });
+    </script>
+  </body>
+</html>
 
